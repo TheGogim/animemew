@@ -1,0 +1,47 @@
+query GetTrendingAnime($page: Int = 1, $perPage: Int = 15) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      hasNextPage
+      currentPage
+    }
+    media(type: ANIME, sort: TRENDING_DESC) {
+      id
+      title {
+        romaji
+        english
+      }
+      coverImage {
+        large
+        extraLarge
+      }
+      averageScore
+      episodes
+      status
+      format
+    }
+  }
+}
+
+query GetPopularAnime($page: Int = 1, $perPage: Int = 15) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      hasNextPage
+      currentPage
+    }
+    media(type: ANIME, sort: POPULARITY_DESC) {
+      id
+      title {
+        romaji
+        english
+      }
+      coverImage {
+        large
+        extraLarge
+      }
+      averageScore
+      episodes
+      status
+      format
+    }
+  }
+}

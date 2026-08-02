@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#FF1A0B2E"
+                android:centerColor="#FF0F0817"
+                android:endColor="#FF09090B"
+                android:type="linear" />
+        </shape>
+    </item>
+    <!-- Logo grande (180dp) sin máscara -->
+    <item
+        android:gravity="center"
+        android:width="180dp"
+        android:height="180dp"
+        android:drawable="@drawable/animemew_logo" />
+</layer-list>

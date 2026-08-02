@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- =========================================================
+//   Banner para Android TV (320x180dp).
+//   Se muestra en la pantalla principal del TV.
+// ========================================================= -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Fondo: gradiente oscuro púrpura -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="0"
+                android:startColor="#FF1A0B2E"
+                android:endColor="#FF0F0817"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- Logo centrado -->
+    <item
+        android:gravity="center"
+        android:width="80dp"
+        android:height="80dp"
+        android:drawable="@drawable/animemew_logo" />
+
+    <!-- Texto "AnimeMew" simulado con un shape (el texto real va en el nombre de la app) -->
+</layer-list>

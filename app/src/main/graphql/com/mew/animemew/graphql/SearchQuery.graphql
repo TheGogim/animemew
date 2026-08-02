@@ -1,0 +1,34 @@
+query SearchAnime(
+  $page: Int = 1, 
+  $perPage: Int = 20, 
+  $search: String, 
+  $genres: [String], 
+  $sort: [MediaSort] = [TRENDING_DESC],
+  $status: [MediaStatus]
+) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo {
+      hasNextPage
+      currentPage
+    }
+    media(type: ANIME, search: $search, genre_in: $genres, sort: $sort, status_in: $status) {
+      id
+      title {
+        romaji
+        english
+      }
+      coverImage {
+        large
+      }
+      format
+      status
+      episodes
+      averageScore
+      genres
+    }
+  }
+}
+
+query GetGenres {
+  GenreCollection
+}

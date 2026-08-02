@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tema splash específico para Android 12+ (API 31+) -->
+<resources>
+    <style name="Theme.AnimeMew.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#FF0F0817</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/animemew_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.Animemew</item>
+    </style>
+</resources>

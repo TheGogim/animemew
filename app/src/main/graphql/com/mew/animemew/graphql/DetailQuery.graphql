@@ -1,0 +1,52 @@
+query GetAnimeDetails($id: Int!) {
+  Media(id: $id, type: ANIME) {
+    id
+    title {
+      romaji
+      english
+      native
+    }
+    coverImage {
+      large
+      extraLarge
+    }
+    bannerImage
+    description(asHtml: false)
+    episodes
+    duration
+    status
+    format
+    seasonYear
+    averageScore
+    genres
+    trailer {
+      id
+      site
+      thumbnail
+    }
+    nextAiringEpisode {
+      airingAt
+      timeUntilAiring
+      episode
+    }
+    relations {
+      edges {
+        relationType
+        node {
+          id
+          title {
+            romaji
+            english
+          }
+          coverImage {
+            large
+          }
+          type
+          status
+          episodes
+          format
+        }
+      }
+    }
+  }
+}

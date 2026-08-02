@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- =========================================================
+//   Gradiente del splash: púrpura profundo → negro puro.
+//   Coincide con AppBackgroundBrush del HomeScreen.
+// ========================================================= -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#FF1A0B2E"
+        android:centerColor="#FF0F0817"
+        android:endColor="#FF09090B"
+        android:type="linear" />
+</shape>
