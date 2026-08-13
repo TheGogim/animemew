@@ -2,6 +2,7 @@ package com.mew.animemew.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mew.animemew.data.AniListUnavailableException
 import com.mew.animemew.data.Anime
 import com.mew.animemew.data.AnimeRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,10 +22,14 @@ class SearchViewModel : ViewModel() {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    // NUEVO: flag para saber si AniList está caído
+    private val _isAniListDown = MutableStateFlow(false)
+    val isAniListDown: StateFlow<Boolean> = _isAniListDown.asStateFlow()
+
     private var currentPage = 1
     private var hasMore = true
     private val perPage = 20
-    
+
     private var currentQuery: String = ""
     private var currentSelectedGenres: List<String> = emptyList()
 
@@ -40,6 +45,8 @@ class SearchViewModel : ViewModel() {
                 if (fetchedGenres != null) {
                     _genres.value = fetchedGenres
                 }
+            } catch (e: AniListUnavailableException) {
+                // AniList caído — no cargar géneros, el flag se setea en search()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -57,14 +64,14 @@ class SearchViewModel : ViewModel() {
 
     fun loadMore() {
         if (!hasMore || _isLoading.value) return
-        
+
         viewModelScope.launch {
             _isLoading.value = true
             try {
                 // AniList API breaks if we pass empty string as search query, so we pass null instead
                 val searchQuery = if (currentQuery.isBlank()) null else currentQuery
                 val genresQuery = if (currentSelectedGenres.isEmpty()) null else currentSelectedGenres
-                
+
                 val page = repository.searchAnime(currentPage, perPage, searchQuery, genresQuery)
                 if (page != null) {
                     val newAnimes = page.media?.filterNotNull()?.map {
@@ -76,16 +83,26 @@ class SearchViewModel : ViewModel() {
                             type = it.format?.name ?: "Unknown"
                         )
                     } ?: emptyList()
-                    
+
                     _searchResults.value = _searchResults.value + newAnimes
                     hasMore = page.pageInfo?.hasNextPage ?: false
                     currentPage++
                 }
+            } catch (e: AniListUnavailableException) {
+                _isAniListDown.value = true
+                hasMore = false
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
                 _isLoading.value = false
             }
         }
+    }
+
+    // NUEVO: Reintentar cuando AniList estaba caído
+    fun retry() {
+        _isAniListDown.value = false
+        loadGenres()
+        search(currentQuery, currentSelectedGenres)
     }
 }

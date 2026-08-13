@@ -62,6 +62,7 @@ fun AnimeDetailScreen(
 ) {
     val animeState by viewModel.animeDetails.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isAniListDown by viewModel.isAniListDown.collectAsState()
     val context = LocalContext.current
 
     val isFavorite by viewModel.isFavorite.collectAsState()
@@ -83,10 +84,21 @@ fun AnimeDetailScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(AppBackgroundBrush),
-            contentAlignment = Alignment.Center
+                .background(AppBackgroundBrush)
         ) {
-            CircularProgressIndicator(color = NeonPurple)
+            if (isAniListDown) {
+                // NUEVO: mostrar error view cuando AniList está caído
+                com.mew.animemew.ui.components.AniListErrorView(
+                    onRetry = { viewModel.retry() }
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = NeonPurple)
+                }
+            }
         }
         return
     }

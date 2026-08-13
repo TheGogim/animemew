@@ -57,6 +57,7 @@ fun HomeScreen(
 ) {
     val sections by viewModel.sections.collectAsState()
     val watchHistory by viewModel.watchHistory.collectAsState()
+    val isAniListDown by viewModel.isAniListDown.collectAsState()
 
     var showRemoveDialog by remember { mutableStateOf(false) }
     var removeSlug by remember { mutableStateOf("") }
@@ -135,6 +136,17 @@ fun HomeScreen(
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
+                // NUEVO: Banner de AniList caído (compacto, arriba de todo)
+                if (isAniListDown) {
+                    item {
+                        com.mew.animemew.ui.components.AniListErrorView(
+                            compact = true,
+                            onRetry = { viewModel.retry() },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
                 if (watchHistory.isNotEmpty()) {
                     item {
                         WatchHistorySection(

@@ -45,6 +45,7 @@ fun SearchScreen(
 
     val searchResults by viewModel.searchResults.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isAniListDown by viewModel.isAniListDown.collectAsState()
 
     val gridState = rememberLazyGridState()
 
@@ -197,37 +198,45 @@ fun SearchScreen(
                 }
             }
         ) { innerPadding ->
-            // Cuadrícula infinita de resultados
-            LazyVerticalGrid(
-                state = gridState,
-                columns = GridCells.Adaptive(minSize = 130.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .focusGroup()
-                    .padding(innerPadding),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(searchResults) { anime ->
-                    AnimeCard(
-                        anime = anime,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = { onAnimeClick(anime.id) }
-                    )
-                }
+            if (isAniListDown && searchResults.isEmpty()) {
+                // Pantalla completa de error cuando AniList está caído y no hay resultados
+                com.mew.animemew.ui.components.AniListErrorView(
+                    onRetry = { viewModel.retry() },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            } else {
+                // Cuadrícula infinita de resultados
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Adaptive(minSize = 130.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .focusGroup()
+                        .padding(innerPadding),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(searchResults) { anime ->
+                        AnimeCard(
+                            anime = anime,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onAnimeClick(anime.id) }
+                        )
+                    }
 
-                if (isLoading) {
-                    item {
-                        Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = NeonPurple)
+                    if (isLoading) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = NeonPurple)
+                            }
                         }
                     }
-                }
 
-                // Espacio en blanco al final para el BottomNav
-                item {
-                    Spacer(modifier = Modifier.height(80.dp))
+                    // Espacio en blanco al final para el BottomNav
+                    item {
+                        Spacer(modifier = Modifier.height(80.dp))
+                    }
                 }
             }
         }

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.core.text.HtmlCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.mew.animemew.data.AniListUnavailableException
 import com.mew.animemew.data.AnimeDetails
 import com.mew.animemew.data.AnimeRelation
 import com.mew.animemew.data.local.AnimeDatabase
@@ -13,8 +14,6 @@ import com.mew.animemew.data.local.LocalAnimeEntity
 import com.mew.animemew.data.season.SeasonChain
 import com.mew.animemew.data.season.SeasonChainResolver
 import com.mew.animemew.data.sync.SyncManager
-import com.mew.animemew.graphql.GetAnimeDetailsQuery
-import com.mew.animemew.network.AniListClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,6 +23,8 @@ class DetailViewModel(application: Application) : AndroidViewModel(application) 
     private val dao = AnimeDatabase.getDatabase(application).animeDao()
     private val syncManager = SyncManager.getInstance(application)
     private val seasonChainResolver = SeasonChainResolver.getInstance(application)
+    // NUEVO: usar AnimeRepository para que detecte cuando AniList está caído
+    private val repository = com.mew.animemew.data.AnimeRepository()
 
     private val _animeDetails = MutableStateFlow<AnimeDetails?>(null)
     val animeDetails: StateFlow<AnimeDetails?> = _animeDetails.asStateFlow()
@@ -33,6 +34,10 @@ class DetailViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    // NUEVO: flag para saber si AniList está caído
+    private val _isAniListDown = MutableStateFlow(false)
+    val isAniListDown: StateFlow<Boolean> = _isAniListDown.asStateFlow()
 
     private val _isFavorite = MutableStateFlow(false)
     val isFavorite: StateFlow<Boolean> = _isFavorite.asStateFlow()
@@ -62,8 +67,9 @@ class DetailViewModel(application: Application) : AndroidViewModel(application) 
             _error.value = null
             _seasonChain.value = null
             try {
-                val response = AniListClient.apolloClient.query(GetAnimeDetailsQuery(id)).execute()
-                val media = response.data?.Media
+                // FIX: usar AnimeRepository para que detecte cuando AniList está caído
+                // (antes se hacía directo con AniListClient y no se detectaba el error)
+                val media = repository.getAnimeDetails(id)
 
                 if (media != null) {
                     val rawDescription = media.description ?: "Sin descripción disponible."
@@ -165,11 +171,24 @@ class DetailViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     _error.value = "No se encontraron detalles."
                 }
+            } catch (e: AniListUnavailableException) {
+                _isAniListDown.value = true
+                _error.value = "AniList no disponible"
+                Log.e("DetailVM", "❌ AniList caído: ${e.message}")
             } catch (e: Exception) {
                 _error.value = e.localizedMessage
             } finally {
                 _isLoading.value = false
             }
+        }
+    }
+
+    // NUEVO: Reintentar cuando AniList estaba caído
+    fun retry() {
+        _isAniListDown.value = false
+        _error.value = null
+        if (currentAnilistId != 0) {
+            loadAnimeDetails(currentAnilistId)
         }
     }
 

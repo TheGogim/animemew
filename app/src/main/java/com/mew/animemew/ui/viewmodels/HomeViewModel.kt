@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.mew.animemew.data.AniListUnavailableException
 import com.mew.animemew.data.Anime
 import com.mew.animemew.data.AnimeRepository
 import com.mew.animemew.data.HomeRepository
@@ -50,6 +51,10 @@ class HomeViewModel(application: android.app.Application) : androidx.lifecycle.A
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    // NUEVO: flag para saber si AniList está caído
+    private val _isAniListDown = MutableStateFlow(false)
+    val isAniListDown: StateFlow<Boolean> = _isAniListDown.asStateFlow()
 
     private val perPage = 15
 
@@ -122,6 +127,15 @@ class HomeViewModel(application: android.app.Application) : androidx.lifecycle.A
                 )
                 _sections.value = currentSections
             }
+        } catch (e: AniListUnavailableException) {
+            Log.e("HomeVM", "❌ AniList caído: ${e.message}")
+            _isAniListDown.value = true
+            // Marcar TODAS las secciones como no-cargando para que no se queden en skeleton
+            val currentSections = _sections.value.toMutableList()
+            currentSections.forEachIndexed { idx, _ ->
+                currentSections[idx] = currentSections[idx].copy(isLoading = false, hasMore = false)
+            }
+            _sections.value = currentSections
         } catch (e: Exception) {
             Log.e("HomeVM", "Error cargando sección ${sectionConfig.title}: ${e.message}")
             // Marcar como cargada (vacía) para que no se quede en skeleton
@@ -141,6 +155,17 @@ class HomeViewModel(application: android.app.Application) : androidx.lifecycle.A
         } catch (e: Exception) {
             null
         }
+    }
+
+    // =========================================================
+    //  NUEVO: Reintentar carga cuando AniList estaba caído
+    // =========================================================
+    fun retry() {
+        _isAniListDown.value = false
+        _sections.value = _sections.value.map {
+            it.copy(isLoading = true, animes = emptyList(), hasMore = true, currentPage = 1)
+        }
+        loadHomeConfig()
     }
 
     // =========================================================
