@@ -344,25 +344,32 @@ fun WatchHistorySection(
                 .focusGroup()
         ) {
             items(historyList) { history ->
-                // FIX: isWaiting ahora usa waitingSinceTimestamp como indicador.
-                // - Cuando marcamos "En espera" → waitingSinceTimestamp = now
-                // - Cuando AiringController habilita el ep → waitingSinceTimestamp = null
-                // Así distinguimos "en espera real" de "episodio recién habilitado que
-                // el usuario puede ver".
-                val isWaiting = history.isAiring && 
-                                history.episodeNumber >= history.totalEpisodes && 
+                // ===== Fase 2 (v13): nuevo modelo de estados de "En espera" =====
+                // isWaiting: el usuario está al día con el último episodio disponible
+                //   y NO hay episodios nuevos para ver.
+                // Si hasNewEpisode=true, el anime NO está en "En espera" real:
+                //   el usuario puede continuar viendo el episodio actual (episodeNumber)
+                //   y hay un badge dorado "Eps nuevos disponibles" arriba de la card.
+                val isWaiting = history.isAiring &&
+                                history.episodeNumber >= history.totalEpisodes &&
                                 history.totalEpisodes > 0 &&
                                 history.progressMs == 0L &&
-                                history.waitingSinceTimestamp != null
+                                history.waitingSinceTimestamp != null &&
+                                !history.hasNewEpisode  // NUEVO: si hay eps nuevos, no mostrar "En espera"
 
                 WatchHistoryCard(
                     history = history,
                     isWaiting = isWaiting,
+                    showNewEpsBadge = history.hasNewEpisode,
                     onClick = {
                         if (isWaiting) {
                             waitingTitle = history.title
                             showWaitingDialog = true
                         } else {
+                            // Abrir el player en el episodio actual (episodeNumber),
+                            // NO en el último disponible. Esto es clave: si el usuario
+                            // dejó el anime en E2 y hay E3-E5 disponibles, lo abrimos
+                            // en E2 para que siga donde se quedó.
                             onPlayEpisode(
                                 history.animeSlug,
                                 history.episodeNumber,
@@ -386,6 +393,7 @@ fun WatchHistorySection(
 fun WatchHistoryCard(
     history: com.mew.animemew.data.local.WatchHistoryEntity,
     isWaiting: Boolean,
+    showNewEpsBadge: Boolean = false,
     onClick: () -> Unit,
     onRemove: () -> Unit
 ) {
@@ -414,6 +422,33 @@ fun WatchHistoryCard(
                         )
                     )
             )
+
+            // NUEVO Fase 2: badge dorado "Nuevos episodios" arriba a la izquierda
+            // cuando hasNewEpisode=true. Le avisa al usuario que hay eps nuevos
+            // disponibles adelante del que está viendo.
+            if (showNewEpsBadge) {
+                val newEpsCount = if (history.nextAvailableEpisode > history.episodeNumber)
+                    history.nextAvailableEpisode - history.episodeNumber else 0
+                val badgeText = if (newEpsCount > 0) "+$newEpsCount" else "NUEVO"
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .background(
+                            color = Color(0xFFFFD700),
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = badgeText,
+                        color = Color.Black,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
 
             IconButton(
                 onClick = onRemove,

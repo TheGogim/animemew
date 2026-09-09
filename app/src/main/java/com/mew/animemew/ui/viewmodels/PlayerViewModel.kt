@@ -712,7 +712,22 @@ class PlayerViewModel(application: android.app.Application) : androidx.lifecycle
             dao.insertAnimeIntoList(AnimeListCrossRef(3, anilistId))
         }
 
-        val tsToSave = if (isAiring && nextEpisodeTimestamp > 0) nextEpisodeTimestamp else null
+        // NUEVO Fase 2: preservar nextAvailableEpisode y hasNewEpisode si ya existía.
+        val existing = dao.getWatchHistoryForAnime(slug)
+        val nextAvail = existing?.nextAvailableEpisode ?: 0
+        val hasNew = if (nextAvail > 0) nextAvail > episode else false
+
+        // FIX Fase 5: cuando el usuario está viendo un episodio (progressMs > 0),
+        // NO debe estar marcado como isAiring=true (porque no está esperando,
+        // está viendo). Solo isAiring=true si está en el último episodio
+        // disponible Y con progressMs=0 (es decir, realmente en espera).
+        val actualIsAiring = if (progressMs > 0) {
+            false  // está viendo, no esperando
+        } else {
+            isAiring  // mantener el estado de espera original
+        }
+
+        val tsToSave = if (actualIsAiring && nextEpisodeTimestamp > 0) nextEpisodeTimestamp else null
 
         dao.insertWatchHistory(
             com.mew.animemew.data.local.WatchHistoryEntity(
@@ -721,8 +736,10 @@ class PlayerViewModel(application: android.app.Application) : androidx.lifecycle
                 progressMs = progressMs, durationMs = durationMs,
                 seasonIndex = seasonIndex, anilistId = anilistId, seasonTitle = seasonTitle,
                 timestamp = System.currentTimeMillis(),
-                isAiring = isAiring,
-                nextEpisodeTimestamp = tsToSave
+                isAiring = actualIsAiring,
+                nextEpisodeTimestamp = tsToSave,
+                nextAvailableEpisode = nextAvail,
+                hasNewEpisode = hasNew
             )
         )
     }

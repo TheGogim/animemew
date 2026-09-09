@@ -55,5 +55,14 @@ data class WatchHistoryEntity(
     // NUEVO v11: cuándo empezamos a esperar este episodio.
     // Sirve para saber cuánto tiempo llevamos esperando y
     // eventualmente hacer algo crítico si pasan muchos días.
-    val waitingSinceTimestamp: Long? = null
+    val waitingSinceTimestamp: Long? = null,
+    // ===== NUEVO Fase 2 (v13): AiringController rediseñado =====
+    // El episodio MÁS ALTO disponible en jkanime/tioanime (calculado por
+    // AiringController). NO es lo que el usuario está viendo, es lo que
+    // ya se publicó en scrapers. Si es 0 → no sabemos / no hay info.
+    val nextAvailableEpisode: Int = 0,
+    // true cuando nextAvailableEpisode > episodeNumber (hay al menos 1 ep
+    // nuevo disponible que el usuario no ha visto). Lo usa HomeScreen para
+    // mostrar un badge dorado "Nuevos episodios disponibles".
+    val hasNewEpisode: Boolean = false
 )

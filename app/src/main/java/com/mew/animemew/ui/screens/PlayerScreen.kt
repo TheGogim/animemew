@@ -16,6 +16,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,6 +54,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.focusable
@@ -84,6 +90,16 @@ import com.mew.animemew.ui.viewmodels.PlayerState
 import com.mew.animemew.ui.viewmodels.PlayerViewModel
 import kotlinx.coroutines.delay
 import com.mew.animemew.ui.components.KeepScreenOn
+import com.mew.animemew.ui.components.PlayerGestures
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.List
+import androidx.media3.common.PlaybackParameters
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -292,6 +308,19 @@ fun PlayerScreen(
                     },
                     onSaveCastProgress = { progress, total ->
                         viewModel.saveCastProgress(progress, total)
+                    },
+                    onSelectEpisode = { newEp ->
+                        // Cambiar de episodio sin salir del player
+                        viewModel.loadEpisode(
+                            slug = cd?.slug ?: slug,
+                            episode = newEp,
+                            title = cd?.title ?: title,
+                            coverUrl = cd?.coverUrl ?: coverUrl,
+                            totalEpisodes = cd?.totalEpisodes ?: totalEpisodes,
+                            anilistId = cd?.anilistId ?: anilistId,
+                            isAiring = cd?.isAiring ?: isAiring,
+                            nextEpisodeTimestamp = cd?.nextEpisodeTimestamp ?: nextEpisodeTimestamp
+                        )
                     }
                 )
             }
@@ -356,7 +385,8 @@ fun ExoPlayerView(
     nextEpisodeLabel: String?,
     onPlayNext: () -> Unit,
     onSaveProgress: (Long, Long) -> Unit,
-    onSaveCastProgress: (Long, Long) -> Unit  // NUEVO v10
+    onSaveCastProgress: (Long, Long) -> Unit,  // NUEVO v10
+    onSelectEpisode: (Int) -> Unit  // NUEVO Fase 4: visor de episodios
 ) {
     var showControls by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(exoPlayer.isPlaying) }
@@ -367,8 +397,19 @@ fun ExoPlayerView(
     var isUserSeeking by remember { mutableStateOf(false) }
     var seekBarValue by remember { mutableFloatStateOf(0f) }
     var showServerSheet by remember { mutableStateOf(false) }
-    // NUEVO: modo zoom (Crunchyroll-style) — persiste entre episodios
+    // NUEVO Fase 4: estados para las features nuevas
+    var isLocked by remember { mutableStateOf(false) }  // A9 lock pantalla
+    var showEpisodesSheet by remember { mutableStateOf(false) }  // A5 visor episodios
+    var showSpeedSheet by remember { mutableStateOf(false) }  // A8 selector velocidad
+    var currentSpeed by remember { mutableFloatStateOf(1.0f) }  // A8 velocidad
     val context = LocalContext.current
+    // Detectar si es TV para omitir gestos (A7 solo móvil)
+    val isMobile = remember {
+        val config = context.resources.configuration
+        val isTv = config.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
+        !isTv
+    }
+    // NUEVO: modo zoom (Crunchyroll-style) — persiste entre episodios
     val zoomPrefs = remember { context.getSharedPreferences("player_prefs", android.content.Context.MODE_PRIVATE) }
     var isZoomMode by remember { mutableStateOf(zoomPrefs.getBoolean("isZoomMode", false)) }
     val playerViewRef = remember { mutableStateOf<androidx.media3.ui.PlayerView?>(null) }
@@ -381,6 +422,11 @@ fun ExoPlayerView(
     var castPosition by remember { mutableStateOf(0.0) }
     var castDuration by remember { mutableStateOf(0.0) }
     var castIsPlaying by remember { mutableStateOf(false) }
+
+    // NUEVO Fase 4: aplicar velocidad al exoPlayer cuando cambia
+    LaunchedEffect(currentSpeed) {
+        exoPlayer.playbackParameters = PlaybackParameters(currentSpeed, 1.0f)
+    }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -492,7 +538,12 @@ fun ExoPlayerView(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = {
-                        showControls = !showControls
+                        // Si está locked, ignorar tap (excepto el botón de unlock que es overlay)
+                        if (isLocked) {
+                            showControls = !showControls
+                        } else {
+                            showControls = !showControls
+                        }
                     }
                 )
             }
@@ -518,6 +569,22 @@ fun ExoPlayerView(
             modifier = Modifier.fillMaxSize()
         )
 
+        // NUEVO Fase 4: overlay de gestos (brillo/volumen/seek) solo en móvil
+        // y solo cuando NO está locked
+        if (isMobile && !isLocked) {
+            PlayerGestures(
+                isMobile = true,
+                onSeek10Backward = { exoPlayer.seekTo(maxOf(0L, exoPlayer.currentPosition - 10_000)) },
+                onSeek10Forward = { exoPlayer.seekTo(exoPlayer.currentPosition + 10_000) },
+                onTap = {
+                    // Tap simple → revivir/ocultar controles
+                    if (!isLocked) {
+                        showControls = !showControls
+                    }
+                }
+            )
+        }
+
         if (isBuffering) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(
@@ -526,7 +593,7 @@ fun ExoPlayerView(
             }
         }
 
-        AnimatedVisibility(visible = showControls, enter = fadeIn(tween(200)), exit = fadeOut(tween(200))) {
+        AnimatedVisibility(visible = showControls && !isLocked, enter = fadeIn(tween(200)), exit = fadeOut(tween(200))) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -570,6 +637,71 @@ fun ExoPlayerView(
                     if (state is PlayerState.Playing) {
                         val playingState = state as PlayerState.Playing
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // NUEVO Fase 4 A9: Botón Lock (bloquear controles)
+                            if (isMobile) {
+                                Box(
+                                    modifier = Modifier
+                                        .tvFocusable(shape = CircleShape, onClick = {
+                                            isLocked = !isLocked
+                                            if (isLocked) {
+                                                showControls = false  // ocultar controles al lock
+                                            }
+                                        })
+                                        .size(42.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.4f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Lock,
+                                        "Bloquear",
+                                        tint = if (isLocked) PremiumCyan else Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                            }
+
+                            // NUEVO Fase 4 A8: Botón Velocidad (selector 0.5x - 1.5x)
+                            if (isMobile) {
+                                Box(
+                                    modifier = Modifier
+                                        .tvFocusable(shape = CircleShape, onClick = { showSpeedSheet = true })
+                                        .size(42.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.4f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "${currentSpeed}x",
+                                        color = if (currentSpeed != 1.0f) PremiumCyan else Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                            }
+
+                            // NUEVO Fase 4 A5: Botón Lista de episodios
+                            if (totalEpisodes > 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .tvFocusable(shape = CircleShape, onClick = { showEpisodesSheet = true })
+                                        .size(42.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.4f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.List,
+                                        "Episodios",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                            }
+
                             // NUEVO v10: Botón Cast
                             Box(
                                 modifier = Modifier
@@ -861,6 +993,277 @@ fun ExoPlayerView(
                     onNavigateBack()
                 }
             )
+        }
+
+        // =========================================================
+        // NUEVO Fase 4 A9: Overlay de Lock (cuando está bloqueado)
+        // =========================================================
+        //
+        // IMPORTANTE: cuando está en lock mode, NO se muestra el overlay de
+        // controles normales (top bar, play/pause, etc). Solo un candado
+        // en la esquina superior derecha que al tocarlo desbloquea.
+        //
+        // FIX v3: el candado aparece en la esquina (no en el centro) para
+        // no interferir con el video, y NO opaca el video cuando está en
+        // lock mode (a diferencia del modo normal donde el video sí se opaca).
+        //
+        // El candado aparece cuando el usuario toca la pantalla, y se
+        // auto-oculta después de 3s.
+        //
+        if (isLocked) {
+            // Si los controles están visibles en lock mode, mostrar SOLO el candado en esquina
+            if (showControls) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // NO opacar el video en lock mode — el usuario quiere ver la imagen limpia
+                ) {
+                    // Candado en esquina superior derecha (no interfere con la mayoría de los videos)
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .padding(end = 16.dp, top = 16.dp)
+                            .tvFocusable(shape = CircleShape, onClick = {
+                                isLocked = false
+                                showControls = true
+                            })
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.LockOpen,
+                            "Desbloquear",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
+            // Auto-ocultar el candado después de 3s si no se toca
+            LaunchedEffect(showControls, isLocked) {
+                if (isLocked && showControls) {
+                    delay(3000)
+                    showControls = false
+                }
+            }
+        }
+
+        // =========================================================
+        // NUEVO Fase 4 A8: Sheet de selección de velocidad (con scroll)
+        // =========================================================
+        if (showSpeedSheet) {
+            // Pausar el video mientras el sheet está abierto
+            LaunchedEffect(showSpeedSheet) {
+                if (showSpeedSheet) exoPlayer.pause()
+            }
+            ModalBottomSheet(
+                onDismissRequest = { showSpeedSheet = false },
+                containerColor = GlassDark,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+            ) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        Text("Velocidad de reproducción", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("Actual: ${currentSpeed}x", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
+                    }
+                    val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f)
+                    items(speeds) { speed ->
+                        val isSelected = currentSpeed == speed
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    if (isSelected) Brush.horizontalGradient(listOf(PremiumPurpleDark, PremiumPurple))
+                                    else Brush.horizontalGradient(listOf(Color.White.copy(alpha = 0.05f), Color.White.copy(alpha = 0.02f)))
+                                )
+                                .clickable {
+                                    currentSpeed = speed
+                                    exoPlayer.playbackParameters = PlaybackParameters(speed, 1.0f)
+                                    showSpeedSheet = false
+                                }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${speed}x",
+                                color = if (isSelected) Color.White else TextPrimary,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (isSelected) {
+                                Icon(Icons.Filled.Check, "Seleccionado", tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // =========================================================
+        // NUEVO Fase 4 A5: Sheet de lista de episodios con paginación
+        //
+        // FIXES v3:
+        //  - Paginación: si hay +100 eps, mostrar de a 50 con botones
+        //    "Anterior" / "Siguiente" arriba
+        //  - Auto-scroll al episodio actual cuando abre el sheet
+        //  - Indicador de rango arriba ("Mostrando E51 a E100")
+        // =========================================================
+        if (showEpisodesSheet && totalEpisodes > 0) {
+            // Pausar el video mientras el sheet está abierto
+            LaunchedEffect(showEpisodesSheet) {
+                if (showEpisodesSheet) exoPlayer.pause()
+            }
+
+            // Paginación: batch de 50 episodios por página
+            val batchSize = 50
+            val totalBatches = (totalEpisodes + batchSize - 1) / batchSize
+            // Calcular el batch inicial basado en el episodio actual
+            val initialBatch = ((episode - 1) / batchSize).coerceIn(0, totalBatches - 1)
+            var currentBatch by remember(episode, totalEpisodes) { mutableIntStateOf(initialBatch) }
+
+            // Calcular rango del batch actual
+            val batchStartEp = currentBatch * batchSize + 1
+            val batchEndEp = minOf(batchStartEp + batchSize - 1, totalEpisodes)
+            val batchEpisodes = (batchStartEp..batchEndEp).toList()
+
+            ModalBottomSheet(
+                onDismissRequest = { showEpisodesSheet = false },
+                containerColor = GlassDark,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                dragHandle = {
+                    Box(modifier = Modifier.padding(vertical = 10.dp).width(40.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(TextSecondary.copy(alpha = 0.4f)))
+                }
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Episodios", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                if (totalBatches > 1)
+                                    "$totalEpisodes en total · Estás en E$episode · Pag. ${currentBatch + 1}/$totalBatches"
+                                else
+                                    "$totalEpisodes en total · Estás en E$episode",
+                                color = TextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+
+                        // Botones de paginación (solo si hay más de 1 batch)
+                        if (totalBatches > 1) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Botón Anterior
+                                Box(
+                                    modifier = Modifier
+                                        .tvFocusable(shape = RoundedCornerShape(8.dp), onClick = {
+                                            if (currentBatch > 0) currentBatch--
+                                        })
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (currentBatch > 0) Color.White.copy(alpha = 0.1f)
+                                            else Color.White.copy(alpha = 0.03f)
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "‹",
+                                        color = if (currentBatch > 0) TextPrimary else TextSecondary.copy(alpha = 0.4f),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                // Botón Siguiente
+                                Box(
+                                    modifier = Modifier
+                                        .tvFocusable(shape = RoundedCornerShape(8.dp), onClick = {
+                                            if (currentBatch < totalBatches - 1) currentBatch++
+                                        })
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (currentBatch < totalBatches - 1) Color.White.copy(alpha = 0.1f)
+                                            else Color.White.copy(alpha = 0.03f)
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "›",
+                                        color = if (currentBatch < totalBatches - 1) TextPrimary else TextSecondary.copy(alpha = 0.4f),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Indicador de rango visible
+                    if (totalBatches > 1) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(PremiumPurple.copy(alpha = 0.15f))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                "Mostrando E$batchStartEp a E$batchEndEp",
+                                color = PremiumPurpleLight,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+
+                    // Cuadrícula de episodios del batch actual
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(5),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.heightIn(max = 320.dp).fillMaxWidth()
+                    ) {
+                        items(batchEpisodes) { ep ->
+                            val isCurrent = ep == episode
+                            Box(
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isCurrent) Brush.horizontalGradient(listOf(PremiumPurpleDark, PremiumPurple))
+                                        else Brush.horizontalGradient(listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.04f)))
+                                    )
+                                    .clickable {
+                                        onSelectEpisode(ep)
+                                        showEpisodesSheet = false
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "$ep",
+                                    color = if (isCurrent) Color.White else TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -19,12 +19,20 @@ query SearchAnime(
       }
       coverImage {
         large
+        extraLarge
       }
       format
       status
       episodes
       averageScore
       genres
+      # NUEVO Fase 3: traer info del próximo episodio para el schedule.
+      # Sin estos campos, ScheduleViewModel no puede mostrar horarios.
+      nextAiringEpisode {
+        airingAt
+        timeUntilAiring
+        episode
+      }
     }
   }
 }

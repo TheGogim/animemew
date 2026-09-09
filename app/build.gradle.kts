@@ -17,8 +17,8 @@ android {
         applicationId = "com.mew.animemew"
         minSdk = 24
         targetSdk = 36
-        versionCode = 14
-        versionName = "9.1"
+        versionCode = 15
+        versionName = "9.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

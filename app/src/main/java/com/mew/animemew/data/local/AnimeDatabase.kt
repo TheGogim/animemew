@@ -17,7 +17,7 @@ import com.mew.animemew.data.season.SeasonChainEntity
         WatchHistoryEntity::class,
         SeasonChainEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AnimeDatabase : RoomDatabase() {
@@ -27,6 +27,23 @@ abstract class AnimeDatabase : RoomDatabase() {
     companion object {
         @Volatile
         private var INSTANCE: AnimeDatabase? = null
+
+        // MIGRACIÓN 12 → 13: rediseño del AiringController.
+        // Añade 2 columnas a watch_history para el nuevo modelo:
+        //  - nextAvailableEpisode: el episodio más alto disponible en scrapers
+        //    (calculado por AiringController en background, NO tocado por el usuario)
+        //  - hasNewEpisode: flag booleano para mostrar badge en HomeScreen
+        //
+        // IMPORTANTE: NO toca episodeNumber ni ningún otro campo existente.
+        // Todos los animes actuales quedan con nextAvailableEpisode=0 y
+        // hasNewEpisode=false → siguen funcionando como antes hasta que el
+        // AiringController los verifique por primera vez.
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE watch_history ADD COLUMN nextAvailableEpisode INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE watch_history ADD COLUMN hasNewEpisode INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         // MIGRACIÓN 11 → 12: invalidar caché de SeasonChain
         // para que se vuelva a resolver con el campo status (NOT_YET_RELEASED, etc.)
@@ -161,7 +178,7 @@ abstract class AnimeDatabase : RoomDatabase() {
                 .addMigrations(
                     MIGRATION_4_11, MIGRATION_5_11, MIGRATION_6_11,
                     MIGRATION_7_11, MIGRATION_8_11, MIGRATION_9_10,
-                    MIGRATION_10_11, MIGRATION_11_12
+                    MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13
                 )
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {

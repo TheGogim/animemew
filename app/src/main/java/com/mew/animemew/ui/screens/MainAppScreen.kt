@@ -23,7 +23,9 @@ import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import android.util.Log
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -52,10 +54,34 @@ import com.mew.animemew.ui.theme.NeonPurple
 fun MainAppScreen(sessionManager: SessionManager) {
     val navController = rememberNavController()
 
+    // NUEVO Fase 5: escuchar deep link desde notificación
+    LaunchedEffect(Unit) {
+        com.mew.animemew.MainActivity.pendingDeepLink?.let { deepLink ->
+            kotlinx.coroutines.delay(100)
+            val encodedTitle = android.net.Uri.encode(deepLink.title)
+            val encodedCover = android.net.Uri.encode(deepLink.coverUrl)
+            val route = "player/${deepLink.slug}/${deepLink.episode}" +
+                "?title=${encodedTitle}" +
+                "&coverUrl=${encodedCover}" +
+                "&total=${deepLink.totalEpisodes}" +
+                "&anilistId=${deepLink.anilistId}" +
+                "&isAiring=${deepLink.isAiring}" +
+                "&nextEpTs=${deepLink.nextEpisodeTimestamp}"
+            try {
+                navController.navigate(route)
+                Log.i("MainAppScreen", "Navegando al player desde notificacion: ${deepLink.title} E${deepLink.episode}")
+            } catch (e: Exception) {
+                Log.e("MainAppScreen", "Error navegando desde deep link: ${e.message}")
+            }
+            com.mew.animemew.MainActivity.clearPendingDeepLink()
+        }
+    }
+
     val items = listOf(
         BottomNavItem.Home,
         BottomNavItem.Search,
         BottomNavItem.Lists,
+        BottomNavItem.Schedule,
         BottomNavItem.Settings
     )
 
@@ -245,6 +271,11 @@ private fun NavGraphBuilder.ComposableRoutes(
     }
     composable(BottomNavItem.Lists.route) {
         ListsScreen(onAnimeClick = { animeId ->
+            navController.navigate("details/$animeId")
+        })
+    }
+    composable(BottomNavItem.Schedule.route) {
+        ScheduleScreen(onAnimeClick = { animeId ->
             navController.navigate("details/$animeId")
         })
     }
