@@ -313,6 +313,29 @@ class SyncWorker(
         //  - 1 notificación de resumen general
         // Las notificaciones tienen prioridad baja y un canal distinto
         // ("debug_airing") para que puedas distinguirlas de las reales.
-        const val DEBUG_AIRING_NOTIFS = true
+        const val DEBUG_AIRING_NOTIFS = false
+
+        /**
+         * NUEVO Fase 5: Fuerza la ejecución inmediata del SyncWorker.
+         *
+         * Llamar desde Settings cuando el usuario toca "Sincronizar ahora".
+         * Esto encola un OneTimeWorkRequest que ejecuta doWork() de inmediato
+         * (o casi — Android decide cuándo, pero suele ser < 5 segundos).
+         *
+         * Esto hace que el "Sincronizar ahora" no solo haga pull/push del
+         * sync cloud, sino que también dispare el AiringController y las
+         * notificaciones de debug.
+         */
+        fun triggerNow(context: Context) {
+            Log.i("SyncWorker", "triggerNow() llamado — encolando ejecución inmediata")
+            val request = androidx.work.OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(
+                    androidx.work.Constraints.Builder()
+                        .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+                        .build()
+                )
+                .build()
+            androidx.work.WorkManager.getInstance(context).enqueue(request)
+        }
     }
 }

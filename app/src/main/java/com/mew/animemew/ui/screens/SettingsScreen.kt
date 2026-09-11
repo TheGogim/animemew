@@ -225,6 +225,10 @@ fun SettingsScreen(
                                         .clickable {
                                             // NUEVO: dispara pull + push real
                                             syncManager.syncNowAsync()
+                                            // NUEVO Fase 5: también forzar SyncWorker para que
+                                            // dispare AiringController + notificaciones de debug
+                                            // inmediatamente (no esperar 15 min)
+                                            com.mew.animemew.data.sync.SyncWorker.triggerNow(context)
                                         }
                                         .padding(horizontal = 14.dp, vertical = 14.dp),
                                     verticalAlignment = Alignment.CenterVertically

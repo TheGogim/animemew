@@ -196,15 +196,25 @@ class AiringController private constructor(
         val newHasNew = newNextAvailable > history.episodeNumber
 
         if (newNextAvailable != history.nextAvailableEpisode || newHasNew != history.hasNewEpisode) {
-            // Actualizar
+            // FIX Fase 5: cuando hay nuevos episodios disponibles (hasNewEpisode=true),
+            // el anime ya NO está "en espera" — tiene episodios para ver.
+            // Setear isAiring=false para que:
+            //   - No vuelva a sumar otro ep cuando salga otro nuevo sin haber visto el anterior
+            //   - El AiringController no lo vuelva a verificar hasta que el usuario vea un ep
+            //   - La UI muestre "Continuar E{N}" + badge "+X" en vez de "En espera"
+            //
+            // Si no hay nuevos eps (newHasNew=false), mantener el isAiring que tenía.
+            val newIsAiring = if (newHasNew) false else history.isAiring
+
             dao.insertWatchHistory(history.copy(
                 nextAvailableEpisode = newNextAvailable,
                 hasNewEpisode = newHasNew,
+                isAiring = newIsAiring,
                 timestamp = System.currentTimeMillis()
             ))
 
             if (newHasNew) {
-                Log.i(TAG, "✅ ${history.title}: marcados ${newNextAvailable - history.episodeNumber} eps nuevos disponibles (E${history.episodeNumber + 1}-E$newNextAvailable)")
+                Log.i(TAG, "✅ ${history.title}: marcados ${newNextAvailable - history.episodeNumber} eps nuevos disponibles (E${history.episodeNumber + 1}-E$newNextAvailable), isAiring=$newIsAiring")
             } else {
                 Log.i(TAG, "${history.title}: sin eps nuevos disponibles (sigue en E${history.episodeNumber})")
             }
