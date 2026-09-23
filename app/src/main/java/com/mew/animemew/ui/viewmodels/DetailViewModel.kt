@@ -25,6 +25,8 @@ class DetailViewModel(application: Application) : AndroidViewModel(application) 
     private val seasonChainResolver = SeasonChainResolver.getInstance(application)
     // NUEVO: usar AnimeRepository para que detecte cuando AniList está caído
     private val repository = com.mew.animemew.data.AnimeRepository()
+    // NUEVO Fase 3: AiringController para refreshBolsa()
+    private val airingController = com.mew.animemew.data.airing.AiringController.getInstance(application)
 
     private val _animeDetails = MutableStateFlow<AnimeDetails?>(null)
     val animeDetails: StateFlow<AnimeDetails?> = _animeDetails.asStateFlow()
@@ -136,6 +138,22 @@ class DetailViewModel(application: Application) : AndroidViewModel(application) 
                                 if (jkanimeData != null) {
                                     debugLog.append("¡Éxito! Se encontraron ${jkanimeData.totalEpisodes} episodios en ${jkanimeData.slug}\n")
                                     Log.i("DetailVM", "✅ Encontrado: ${jkanimeData.slug} con ${jkanimeData.totalEpisodes} eps")
+
+                                    // NUEVO Fase 3: refreshBolsa con el slug que acabamos de obtener
+                                    // Esto actualiza anilistNextEpNum y anilistNextEpAirAt para que
+                                    // el AiringController sepa cuándo verificar nuevos episodios.
+                                    if (media.status?.name == "RELEASING") {
+                                        try {
+                                            airingController.refreshBolsa(
+                                                anilistId = id,
+                                                slug = jkanimeData.slug,
+                                                title = media.title?.romaji ?: media.title?.english ?: "",
+                                                coverUrl = media.coverImage?.large ?: media.coverImage?.extraLarge ?: ""
+                                            )
+                                        } catch (e: Exception) {
+                                            Log.w("DetailVM", "refreshBolsa falló (no crítico): ${e.message}")
+                                        }
+                                    }
                                 } else {
                                     debugLog.append("No se encontró ningún anime que coincida en Jkanime.\n")
                                     Log.w("DetailVM", "❌ No encontrado en jkanime")

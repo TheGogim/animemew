@@ -9,43 +9,35 @@ import com.mew.animemew.scraper.EpisodeResolver
 import com.mew.animemew.scraper.ServerInfo
 
 // =========================================================
-//  AiringController v4 — Rediseño completo (Fase 2, 2026-09-09)
+//  AiringController v5 — La "Bolsa" de emisión (Fase 3, 2026-09-22)
 //
-//  PROBLEMA ANTERIOR (v3):
-//    El AiringController auto-avanzaba episodeNumber en background
-//    cuando encontraba un episodio nuevo disponible en jkanime.
-//    Si el usuario dejaba un anime en ep 2 y volvía en 3 semanas,
-//    la app decía "Continuar Ep 5" en vez de "Continuar Ep 2".
+//  CAMBIO PRINCIPAL vs v4:
+//  - isAiring ahora significa "este anime está en emisión y lo seguimos"
+//    (siempre true para animes en emisión, sin importar si está viendo o esperando)
+//  - NUEVO: refreshBolsa() — consulta AniList + jk para tener info fresca
+//  - NUEVO: checkAllAiring() — verifica cada anime en emisión según su fecha
 //
-//  FILOSOFÍA NUEVA (v4):
-//    El AiringController NUNCA toca episodeNumber. Solo:
-//      1. Calcula cuál es el episodio más alto disponible en scrapers
-//      2. Lo guarda en nextAvailableEpisode
-//      3. Marca hasNewEpisode = true si nextAvailableEpisode > episodeNumber
+//  FLUJO DE LA BOLSA:
 //
-//    El usuario es el único que cambia episodeNumber (viendo un episodio).
+//  1. Usuario ve un episodio de un anime en emisión → saveToHistory(isAiring=true)
+//     → El anime entra a la bolsa (watch_history con isAiring=true)
+//     → Aparece en "Continuar viendo" Y en "Horarios"
 //
-//  REGLAS DE ESTADO (ver WatchHistoryEntity para el modelo completo):
+//  2. Al abrir la app o cada 15 min (SyncWorker):
+//     checkAllAiring() para cada anime con isAiring=true:
+//       a. Si anilistNextEpAirAt == 0 → refreshBolsa() para obtener fecha
+//       b. Si anilistNextEpAirAt + 1.5h > now → saltar (aún no toca)
+//       c. Si anilistNextEpAirAt + 1.5h <= now:
+//          - Verificar si ep anilistNextEpNum está en jk
+//          - Si SÍ: totalEpisodes = anilistNextEpNum, refresh fecha próximo ep
+//          - Si NO: reintentar en 15 min (nextEpisodeTimestamp = now + 15min)
 //
-//    "Viendo E{N}" → episodeNumber=N, progressMs>0, isAiring=false
-//    "En espera"   → episodeNumber=N (último visto), progressMs=0,
-//                    isAiring=true, waitingSinceTimestamp=now,
-//                    nextAvailableEpisode<=N (no hay nuevos)
-//    "Continuar E{N} + badge nuevos eps" → episodeNumber=N, progressMs=0,
-//                    isAiring=true, waitingSinceTimestamp=now,
-//                    nextAvailableEpisode>N, hasNewEpisode=true
-//    "Visto"       → eliminado de watch_history, movido a lista 2 (Vistos)
+//  3. Usuario ve 80%+ del último episodio disponible → markAsWaiting()
+//     → waitingSinceTimestamp = now (sigue en la bolsa, isAiring=true)
+//     → El fix v4 impide auto-avance hasta que vea el actual
 //
-//  FLUJO DEL AiringController.checkAllWaiting():
-//    Para cada anime en watch_history donde isAiring=true:
-//      1. Si AniList dice FINISHED y vimos el último episodio real →
-//         marcar como Visto (eliminar de watch_history, agregar a lista 2)
-//      2. Si no, buscar el último episodio disponible en jkanime:
-//         - Si es > episodeNumber → marcar hasNewEpisode=true, nextAvailableEpisode=ultimo
-//         - Si es <= episodeNumber → hasNewEpisode=false, sin cambios
-//
-//  IMPORTANTE: el SyncWorker sigue llamando checkAllWaiting() cada 15 min.
-//  Solo se procesan animes con isAiring=true (los que el usuario está siguiendo).
+//  4. Usuario ve 100% del último → auto-avanza al siguiente (si lo hay)
+//     → Si no hay siguiente → markAsWaiting()
 // =========================================================
 
 class AiringController private constructor(
@@ -70,48 +62,147 @@ class AiringController private constructor(
             }
         }
 
-        // 2 horas en segundos — buffer para Colombia + tiempo de scraping
-        const val BUFFER_SECONDS = 2 * 60 * 60L
+        // 1.5 horas en segundos — buffer para Colombia + tiempo de scraping
+        // (bajamos de 2h a 1.5h según petición del usuario)
+        const val BUFFER_SECONDS = 90 * 60L  // 5400 seg = 1.5h
 
-        // 1 hora en segundos — reintento cuando no podemos verificar disponibilidad
-        const val RETRY_SECONDS = 60 * 60L
+        // 15 minutos en segundos — reintento cuando el episodio no está disponible aún
+        const val RETRY_SECONDS = 15 * 60L
 
         // 80% requerido para marcar como visto/terminado (lo usa PlayerViewModel)
         const val WATCHED_THRESHOLD = 0.8f
 
         // Máximo de episodios a probar hacia adelante buscando el último disponible.
-        // Si AniList dice 24 eps y el usuario va en ep 2, probamos hasta ep 24.
-        // Si no hay info de AniList, probamos hasta episodeNumber + 50 (límite razonable).
         const val MAX_EPISODES_TO_PROBE = 50
     }
 
+    // =====================================================
+    //  BOLSA: refreshBolsa() — actualiza info de AniList + jk
+    // =====================================================
+
     /**
-     * Verifica TODOS los animes en "En espera" (isAiring=true).
+     * Refresca la "bolsa" para un anime específico.
+     * Consulta AniList (status, nextAiringEpisode) y jk (totalEpisodes disponibles).
      *
-     * IMPORTANTE: NO toca episodeNumber de ningún anime.
-     * Solo actualiza nextAvailableEpisode y hasNewEpisode.
+     * NO toca episodeNumber ni progressMs.
      *
-     * @return número de animes que tuvieron cambios
+     * Llamado desde:
+     * - DetailViewModel.loadAnimeDetails() cuando el usuario entra a detalles
+     * - checkAllAiring() cuando anilistNextEpAirAt == 0
      */
-    suspend fun checkAllWaiting(): Int {
-        val waitingAnimes = try {
+    suspend fun refreshBolsa(
+        anilistId: Int,
+        slug: String,
+        title: String,
+        coverUrl: String
+    ) {
+        if (anilistId <= 0 || slug.isBlank()) return
+
+        Log.i(TAG, "🔄 refreshBolsa: $title (anilistId=$anilistId, slug=$slug)")
+
+        // 1. Consultar AniList
+        val media = try {
+            animeRepository.getAnimeDetails(anilistId)
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshBolsa: error AniList para $title: ${e.message}")
+            null
+        }
+
+        val status = media?.status?.name
+        val anilistTotalEps = media?.episodes ?: 0
+        val nextEpNum = media?.nextAiringEpisode?.episode ?: 0
+        val nextEpAirAt = media?.nextAiringEpisode?.airingAt?.toLong() ?: 0L
+
+        Log.i(TAG, "refreshBolsa: $title status=$status, anilistEps=$anilistTotalEps, nextEp=$nextEpNum @ $nextEpAirAt")
+
+        // Si AniList dice que NO está en emisión, no hacer nada (el PlayerViewModel
+        // se encarga de marcar como Visto cuando corresponde)
+        if (status != "RELEASING") {
+            Log.i(TAG, "refreshBolsa: $title no está en emisión (status=$status), omitiendo")
+            return
+        }
+
+        // 2. Buscar el entry actual en watch_history (si existe)
+        val existing = dao.getWatchHistoryForAnime(slug)
+
+        if (existing == null) {
+            // El anime no está en watch_history → no lo agregamos aquí.
+            // El anime entra a la bolsa solo cuando el usuario ve un episodio
+            // (lo maneja PlayerViewModel.saveToHistory).
+            Log.i(TAG, "refreshBolsa: $title no está en watch_history, no se agrega (esperar a que el usuario vea un ep)")
+            return
+        }
+
+        // 3. Buscar el último episodio disponible en jk ahora mismo
+        // Solo si tenemos nextEpNum, probamos ese. Si no, salimos.
+        var jkTotalEps = existing.totalEpisodes
+        if (nextEpNum > 0) {
+            val isNextAvailable = checkEpisodeAvailable(slug, nextEpNum, title)
+            if (isNextAvailable) {
+                // El próximo ep ya está disponible → actualizar totalEpisodes
+                jkTotalEps = maxOf(jkTotalEps, nextEpNum)
+                Log.i(TAG, "refreshBolsa: $title E$nextEpNum ya disponible en jk, totalEps=$jkTotalEps")
+            } else {
+                Log.i(TAG, "refreshBolsa: $title E$nextEpNum aún no disponible en jk")
+            }
+        }
+
+        // 4. Actualizar watch_history con la info fresca
+        // NO tocamos episodeNumber ni progressMs
+        val now = System.currentTimeMillis()
+        val nextTs = if (nextEpAirAt > 0) nextEpAirAt + BUFFER_SECONDS else null
+
+        dao.insertWatchHistory(existing.copy(
+            title = title,  // por si cambió
+            coverUrl = coverUrl,  // por si cambió
+            totalEpisodes = jkTotalEps,
+            isAiring = true,  // siempre true para animes en emisión
+            anilistNextEpNum = nextEpNum,
+            anilistNextEpAirAt = nextEpAirAt,
+            nextEpisodeTimestamp = nextTs,
+            timestamp = now
+        ))
+
+        Log.i(TAG, "✅ refreshBolsa: $title actualizado (totalEps=$jkTotalEps, nextEp=$nextEpNum @ $nextEpAirAt)")
+    }
+
+    // =====================================================
+    //  Verificación periódica — checkAllAiring()
+    // =====================================================
+
+    /**
+     * Verifica TODOS los animes en emisión (isAiring=true).
+     *
+     * Para cada uno:
+     * 1. Si anilistNextEpAirAt == 0 → refreshBolsa() para obtener fecha
+     * 2. Si anilistNextEpAirAt + 1.5h > now → saltar (aún no toca)
+     * 3. Si anilistNextEpAirAt + 1.5h <= now:
+     *    - Verificar si ep anilistNextEpNum está en jk
+     *    - Si SÍ: totalEpisodes = anilistNextEpNum, refresh fecha próximo ep
+     *    - Si NO: reintentar en 15 min
+     *
+     * @return número de animes actualizados
+     */
+    suspend fun checkAllAiring(): Int {
+        val airingAnimes = try {
             dao.getAiringWatchHistory()
         } catch (e: Exception) {
-            Log.e(TAG, "Error obteniendo animes en espera: ${e.message}")
+            Log.e(TAG, "Error obteniendo animes en emisión: ${e.message}")
             return 0
         }
 
-        if (waitingAnimes.isEmpty()) {
-            Log.i(TAG, "No hay animes en espera")
+        if (airingAnimes.isEmpty()) {
+            Log.i(TAG, "No hay animes en emisión para verificar")
             return 0
         }
 
-        Log.i(TAG, "=== Verificando ${waitingAnimes.size} animes en espera ===")
+        Log.i(TAG, "=== Verificando ${airingAnimes.size} animes en emisión ===")
         var updatedCount = 0
+        val currentTimeSec = System.currentTimeMillis() / 1000
 
-        for (history in waitingAnimes) {
+        for (history in airingAnimes) {
             try {
-                val wasUpdated = checkOneWaiting(history)
+                val wasUpdated = checkOneAiring(history, currentTimeSec)
                 if (wasUpdated) updatedCount++
             } catch (e: Exception) {
                 Log.e(TAG, "Error verificando ${history.title}: ${e.message}")
@@ -123,118 +214,228 @@ class AiringController private constructor(
     }
 
     /**
-     * Verifica un solo anime en espera.
-     *
-     * NO cambia episodeNumber. Solo actualiza:
-     *   - nextAvailableEpisode (el episodio más alto disponible en scrapers)
-     *   - hasNewEpisode (true si hay nuevos eps que el usuario no vio)
-     *
-     * CASOS:
-     *   A) AniList dice FINISHED y vimos el último → marcar como Visto
-     *   B) AniList dice FINISHED pero hay más eps que vimos → buscar último disponible
-     *   C) AniList dice RELEASING → buscar último disponible en scrapers
-     *   D) Sin info de AniList → buscar último disponible en scrapers
-     *
-     * @return true si fue actualizado
+     * Alias de checkAllAiring() para compatibilidad con SyncWorker/HomeViewModel
+     * que aún llaman checkAllWaiting().
      */
-    private suspend fun checkOneWaiting(history: WatchHistoryEntity): Boolean {
-        Log.i(TAG, "→ Verificando: ${history.title} (ep=${history.episodeNumber}, total=${history.totalEpisodes})")
+    suspend fun checkAllWaiting(): Int = checkAllAiring()
+
+    /**
+     * Verifica un solo anime en emisión.
+     *
+     * NUEVO v15: si epEsperado != 0 (el usuario está en "En espera" formal
+     * esperando un episodio específico), SOLO verificamos ese episodio en jk.
+     * Si está disponible → episodeNumber = epEsperado, progressMs = 0, epEsperado = 0.
+     *
+     * Si epEsperado == 0 (no está en espera, solo siguiendo), usamos la
+     * lógica anterior basada en anilistNextEpAirAt + buffer.
+     */
+    private suspend fun checkOneAiring(history: WatchHistoryEntity, currentTimeSec: Long): Boolean {
+        Log.i(TAG, "→ Verificando: ${history.title} (ep=${history.episodeNumber}, total=${history.totalEpisodes}, epEsperado=${history.epEsperado}, nextAnilistEp=${history.anilistNextEpNum} @ ${history.anilistNextEpAirAt})")
 
         // =====================================================
-        // CASO A: AniList dice FINISHED y vimos el último episodio real
+        // CASO ESPECIAL: epEsperado != 0 (usuario en "En espera" formal)
+        // =====================================================
+        // El usuario está esperando un episodio específico (ej: el 12).
+        // Verificamos ESE episodio en jk sin importar si salieron 12, 13, 14.
+        // Cuando lo encontremos → episodeNumber = epEsperado, progressMs = 0,
+        // epEsperado = 0 (ya no estamos esperando).
+        if (history.epEsperado > 0) {
+            Log.i(TAG, "${history.title}: en espera del E${history.epEsperado}, verificando en jk...")
+
+            // Primero: ¿ya se cumplió la fecha de AniList + buffer?
+            // Si todavía no, no hacer scraping innecesario.
+            if (history.anilistNextEpAirAt > 0) {
+                val effectiveTs = history.anilistNextEpAirAt + BUFFER_SECONDS
+                if (currentTimeSec < effectiveTs) {
+                    val remaining = effectiveTs - currentTimeSec
+                    val hoursLeft = remaining / 3600
+                    val minsLeft = (remaining % 3600) / 60
+                    Log.i(TAG, "${history.title}: en espera, faltan ${hoursLeft}h ${minsLeft}m para E${history.epEsperado}")
+                    return false
+                }
+            }
+
+            // Ya se cumplió la fecha (o no había fecha) → verificar jk
+            val isAvailable = checkEpisodeAvailable(history.animeSlug, history.epEsperado, history.title)
+
+            if (isAvailable) {
+                // El episodio esperado ya está disponible en jk.
+                // Actualizar episodeNumber al epEsperado, progressMs = 0, epEsperado = 0.
+                Log.i(TAG, "✅ ${history.title}: E${history.epEsperado} disponible, habilitando para el usuario...")
+
+                // Buscar el último ep disponible en jk para actualizar totalEpisodes
+                // (puede que ya hayan salido 12, 13, 14, pero el usuario va en el 12)
+                val lastAvailable = findLastAvailableEpisode(
+                    slug = history.animeSlug,
+                    title = history.title,
+                    startEp = history.epEsperado,
+                    maxEp = history.epEsperado + MAX_EPISODES_TO_PROBE
+                )
+                val newTotalEps = lastAvailable ?: history.epEsperado
+
+                // Consultar AniList para nueva fecha de próximo ep
+                val media = try { animeRepository.getAnimeDetails(history.anilistId) } catch (_: Exception) { null }
+                val newNextEpNum = media?.nextAiringEpisode?.episode ?: 0
+                val newNextEpAirAt = media?.nextAiringEpisode?.airingAt?.toLong() ?: 0L
+                val newNextTs = if (newNextEpAirAt > 0) newNextEpAirAt + BUFFER_SECONDS else null
+
+                dao.insertWatchHistory(history.copy(
+                    episodeNumber = history.epEsperado,  // AVANZAR al ep esperado
+                    progressMs = 0L,
+                    durationMs = 0L,
+                    totalEpisodes = newTotalEps,
+                    isAiring = true,
+                    anilistNextEpNum = newNextEpNum,
+                    anilistNextEpAirAt = newNextEpAirAt,
+                    nextEpisodeTimestamp = newNextTs,
+                    waitingSinceTimestamp = null,  // ya no estamos esperando
+                    epEsperado = 0,  // NUEVO: ya no esperamos un ep específico
+                    timestamp = System.currentTimeMillis()
+                ))
+
+                Log.i(TAG, "✅ ${history.title}: habilitado E${history.epEsperado} (totalEps=$newTotalEps, nextEp=$newNextEpNum @ $newNextEpAirAt, epEsperado=0)")
+                return true
+            } else {
+                // El episodio aún no está en jk → reintentar en 15 min
+                val retryTs = currentTimeSec + RETRY_SECONDS
+                dao.insertWatchHistory(history.copy(
+                    nextEpisodeTimestamp = retryTs,
+                    timestamp = System.currentTimeMillis()
+                ))
+                Log.i(TAG, "${history.title}: E${history.epEsperado} aún no disponible, reintentar en 15 min")
+                return false
+            }
+        }
+
+        // =====================================================
+        // CASO A: No tenemos fecha de AniList → refreshBolsa para obtenerla
+        // =====================================================
+        if (history.anilistNextEpAirAt == 0L || history.anilistNextEpNum == 0) {
+            Log.i(TAG, "${history.title}: sin fecha de AniList, ejecutando refreshBolsa()")
+            refreshBolsa(
+                anilistId = history.anilistId,
+                slug = history.animeSlug,
+                title = history.title,
+                coverUrl = history.coverUrl
+            )
+            return true
+        }
+
+        // =====================================================
+        // CASO B: Verificar si AniList dice FINISHED (anime terminó emisión)
         // =====================================================
         if (history.anilistId > 0) {
             val media = try {
                 animeRepository.getAnimeDetails(history.anilistId)
             } catch (e: Exception) {
-                Log.w(TAG, "${history.title}: no se pudo consultar AniList: ${e.message}, continuando con scrapers")
                 null
             }
 
             if (media != null) {
                 val status = media.status?.name
                 val anilistTotalEps = media.episodes ?: 0
-                Log.i(TAG, "${history.title}: AniList status=$status, episodes=$anilistTotalEps (nosotros vimos E${history.episodeNumber}/${history.totalEpisodes})")
 
                 if (status == "FINISHED" && anilistTotalEps > 0 && history.episodeNumber >= anilistTotalEps) {
-                    // Vimos el último episodio real → marcar como Visto
-                    Log.i(TAG, "✅ ${history.title}: vimos el último episodio (E${history.episodeNumber} = $anilistTotalEps de AniList) → Visto")
+                    Log.i(TAG, "✅ ${history.title}: AniList dice FINISHED y vimos el último (E${history.episodeNumber} = $anilistTotalEps) → Visto")
                     markAsFinished(history)
                     return true
+                }
+
+                // Si AniList ya no tiene nextAiringEpisode, el anime terminó
+                if (media.nextAiringEpisode == null && status == "FINISHED") {
+                    // Verificar si hay más eps disponibles en jk que no vimos
+                    val lastAvailable = findLastAvailableEpisode(
+                        slug = history.animeSlug,
+                        title = history.title,
+                        startEp = history.episodeNumber + 1,
+                        maxEp = anilistTotalEps
+                    )
+                    if (lastAvailable != null && lastAvailable > history.episodeNumber) {
+                        dao.insertWatchHistory(history.copy(
+                            totalEpisodes = lastAvailable,
+                            anilistNextEpAirAt = 0,  // ya no hay más fechas que verificar
+                            anilistNextEpNum = 0,
+                            timestamp = System.currentTimeMillis()
+                        ))
+                        Log.i(TAG, "✅ ${history.title}: AniList FINISHED pero jk tiene hasta E$lastAvailable, actualizado")
+                        return true
+                    } else {
+                        // No hay más eps disponibles → limpiar fecha para no volver a verificar
+                        dao.insertWatchHistory(history.copy(
+                            anilistNextEpAirAt = 0,
+                            anilistNextEpNum = 0,
+                            nextEpisodeTimestamp = null,
+                            timestamp = System.currentTimeMillis()
+                        ))
+                        Log.i(TAG, "${history.title}: AniList FINISHED, sin más eps en jk, limpiando fecha")
+                        return false
+                    }
                 }
             }
         }
 
         // =====================================================
-        // CASOS B/C/D: Buscar el último episodio disponible en scrapers
+        // CASO C: ¿Ya se cumplió la fecha del próximo ep + buffer?
         // =====================================================
-        // Empezamos desde episodeNumber+1 y vamos probando hacia adelante.
-        // Si encontramos episodios disponibles, actualizamos nextAvailableEpisode.
-        val knownMax = maxOf(history.totalEpisodes, history.nextAvailableEpisode)
-        val probeLimit = if (history.anilistId > 0) {
-            // Si tenemos AniList, no probar más allá de lo que AniList dice
-            val media = try { animeRepository.getAnimeDetails(history.anilistId) } catch (_: Exception) { null }
-            val anilistTotal = media?.episodes ?: 0
-            if (anilistTotal > 0) anilistTotal else history.episodeNumber + MAX_EPISODES_TO_PROBE
-        } else {
-            history.episodeNumber + MAX_EPISODES_TO_PROBE
+        val effectiveTs = history.anilistNextEpAirAt + BUFFER_SECONDS
+
+        if (currentTimeSec < effectiveTs) {
+            // Aún no toca verificar
+            val remaining = effectiveTs - currentTimeSec
+            val hoursLeft = remaining / 3600
+            val minsLeft = (remaining % 3600) / 60
+            Log.i(TAG, "${history.title}: en seguimiento, faltan ${hoursLeft}h ${minsLeft}m para E${history.anilistNextEpNum}")
+            return false
         }
 
-        Log.i(TAG, "${history.title}: buscando último episodio disponible desde E${history.episodeNumber + 1} hasta E$probeLimit (conocido: $knownMax)")
+        // =====================================================
+        // CASO D: Ya se cumplió la fecha → verificar si el ep está en jk
+        // =====================================================
+        Log.i(TAG, "${history.title}: fecha cumplida, verificando E${history.anilistNextEpNum} en jk...")
 
-        val lastAvailable = findLastAvailableEpisode(
-            slug = history.animeSlug,
-            title = history.title,
-            startEp = history.episodeNumber + 1,
-            maxEp = probeLimit
-        )
+        val isAvailable = checkEpisodeAvailable(history.animeSlug, history.anilistNextEpNum, history.title)
 
-        Log.i(TAG, "${history.title}: último disponible encontrado = E${lastAvailable ?: history.episodeNumber}")
+        if (isAvailable) {
+            // El episodio ya está disponible en jk
+            // 1. Actualizar totalEpisodes
+            // 2. Consultar AniList para nueva fecha de próximo ep
+            Log.i(TAG, "✅ ${history.title}: E${history.anilistNextEpNum} disponible en jk, actualizando bolsa...")
 
-        // Calcular nuevo estado
-        val newNextAvailable = lastAvailable ?: history.episodeNumber
-        val newHasNew = newNextAvailable > history.episodeNumber
+            val media = try { animeRepository.getAnimeDetails(history.anilistId) } catch (_: Exception) { null }
+            val newNextEpNum = media?.nextAiringEpisode?.episode ?: 0
+            val newNextEpAirAt = media?.nextAiringEpisode?.airingAt?.toLong() ?: 0L
 
-        if (newNextAvailable != history.nextAvailableEpisode || newHasNew != history.hasNewEpisode) {
-            // FIX Fase 5: cuando hay nuevos episodios disponibles (hasNewEpisode=true),
-            // el anime ya NO está "en espera" — tiene episodios para ver.
-            // Setear isAiring=false para que:
-            //   - No vuelva a sumar otro ep cuando salga otro nuevo sin haber visto el anterior
-            //   - El AiringController no lo vuelva a verificar hasta que el usuario vea un ep
-            //   - La UI muestre "Continuar E{N}" + badge "+X" en vez de "En espera"
-            //
-            // Si no hay nuevos eps (newHasNew=false), mantener el isAiring que tenía.
-            val newIsAiring = if (newHasNew) false else history.isAiring
+            val newTotalEps = maxOf(history.totalEpisodes, history.anilistNextEpNum)
+            val newNextTs = if (newNextEpAirAt > 0) newNextEpAirAt + BUFFER_SECONDS else null
 
             dao.insertWatchHistory(history.copy(
-                nextAvailableEpisode = newNextAvailable,
-                hasNewEpisode = newHasNew,
-                isAiring = newIsAiring,
+                totalEpisodes = newTotalEps,
+                anilistNextEpNum = newNextEpNum,
+                anilistNextEpAirAt = newNextEpAirAt,
+                nextEpisodeTimestamp = newNextTs,
                 timestamp = System.currentTimeMillis()
             ))
 
-            if (newHasNew) {
-                Log.i(TAG, "✅ ${history.title}: marcados ${newNextAvailable - history.episodeNumber} eps nuevos disponibles (E${history.episodeNumber + 1}-E$newNextAvailable), isAiring=$newIsAiring")
-            } else {
-                Log.i(TAG, "${history.title}: sin eps nuevos disponibles (sigue en E${history.episodeNumber})")
-            }
+            Log.i(TAG, "✅ ${history.title}: bolsa actualizada (totalEps=$newTotalEps, nextEp=$newNextEpNum @ $newNextEpAirAt)")
             return true
         } else {
-            Log.i(TAG, "${history.title}: sin cambios")
+            // El episodio aún no está en jk → reintentar en 15 min
+            val retryTs = currentTimeSec + RETRY_SECONDS
+            dao.insertWatchHistory(history.copy(
+                nextEpisodeTimestamp = retryTs,
+                timestamp = System.currentTimeMillis()
+            ))
+            Log.i(TAG, "${history.title}: E${history.anilistNextEpNum} aún no disponible, reintentar en 15 min")
             return false
         }
     }
 
+    // =====================================================
+    //  Helpers de scraping
+    // =====================================================
+
     /**
      * Busca el último episodio disponible en scrapers empezando desde startEp.
-     *
-     * Estrategia:
-     *   1. Saltar a startEp + 5 (si hay startEp+5, hay startEp+1, +2, +3, +4 también)
-     *   2. Si startEp+5 no está, probar startEp+1, startEp+2, ... linearmente
-     *
-     * Esto minimiza las llamadas al scraper (probamos ~10 episodios en vez de 50).
-     *
-     * @return el número del último episodio disponible, o null si startEp no está disponible
      */
     private suspend fun findLastAvailableEpisode(
         slug: String,
@@ -244,40 +445,28 @@ class AiringController private constructor(
     ): Int? {
         if (startEp > maxEp) return null
 
-        // Si solo hay 1 episodio para probar, ir directo
         if (startEp == maxEp) {
             return if (checkEpisodeAvailable(slug, startEp, title)) startEp else null
         }
 
-        // Probar el último primero (binary-search style)
-        // Si maxEp está disponible, ese es el último
         if (checkEpisodeAvailable(slug, maxEp, title)) {
             return maxEp
         }
 
-        // Si no está maxEp, buscar linealmente desde startEp hacia adelante
-        // hasta encontrar el primer ep que no esté disponible
         var lastFound: Int? = null
-
-        // Optimización: probar en saltos de a 5 primero
         var probe = startEp
         while (probe <= maxEp) {
             val isAvailable = checkEpisodeAvailable(slug, probe, title)
             if (isAvailable) {
                 lastFound = probe
-                probe += 5  // saltar 5 adelante
+                probe += 5
             } else {
-                // No está disponible en este probe. Si ya teníamos uno, parar.
                 if (lastFound != null) break
-                // Si no teníamos ninguno, este startEp no está disponible → no hay nada nuevo
                 return null
             }
         }
 
-        // Si lastFound está en el futuro lejano, ajustar: probar los intermedios
-        // para encontrar el verdadero último disponible
         if (lastFound != null) {
-            // Probar linealmente desde lastFound+1 hasta encontrar uno que no esté
             var searchEp = lastFound + 1
             while (searchEp <= maxEp) {
                 val isAvailable = checkEpisodeAvailable(slug, searchEp, title)
@@ -293,11 +482,6 @@ class AiringController private constructor(
         return lastFound
     }
 
-    /**
-     * Verifica si un episodio está disponible en jkanime O tioanime.
-     * Usa EpisodeResolver que busca en ambos en paralelo.
-     * Tan pronto como un scraper devuelve un streamUrl, se considera disponible.
-     */
     private suspend fun checkEpisodeAvailable(slug: String, episode: Int, title: String): Boolean {
         return try {
             var foundServer = false
@@ -307,13 +491,11 @@ class AiringController private constructor(
                     if (server.streamUrl != null && !foundServer) {
                         foundServer = true
                         Log.d(TAG, "  ✅ $slug E$episode disponible en ${server.name}")
-                        // Cancelar el flow lo antes posible
                         throw kotlinx.coroutines.CancellationException("Server found, stopping")
                     }
                 }
             foundServer
         } catch (e: kotlinx.coroutines.CancellationException) {
-            // Esto es esperado cuando encontramos un servidor
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error verificando disponibilidad $slug E$episode: ${e.message}")
@@ -321,15 +503,10 @@ class AiringController private constructor(
         }
     }
 
-    /**
-     * Marca un anime como finalizado (visto).
-     * SOLO se llama cuando:
-     *   - AniList dice FINISHED Y
-     *   - history.episodeNumber >= AniList.episodes (vimos el último real)
-     *
-     * Elimina de watch_history (deja de aparecer en "Continuar viendo")
-     * y lo mueve a la lista 2 (Vistos).
-     */
+    // =====================================================
+    //  markAsFinished y markAsWaiting (sin cambios funcionales)
+    // =====================================================
+
     private suspend fun markAsFinished(history: WatchHistoryEntity) {
         dao.deleteWatchHistory(history.animeSlug)
 
@@ -355,13 +532,14 @@ class AiringController private constructor(
     }
 
     /**
-     * Marca un anime como "En espera" después de ver el último episodio.
+     * Marca un anime como "En espera" después de ver el último episodio disponible.
      * Llamado por PlayerViewModel cuando se alcanza 80%+ del último ep.
      *
-     * IMPORTANTE: NO cambia episodeNumber (lo dejamos en el último que vimos).
-     * Solo resetea progressMs y marca isAiring=true + waitingSinceTimestamp.
+     * NO cambia episodeNumber. Resetea progressMs y marca waitingSinceTimestamp.
+     * isAiring sigue true (el anime sigue en emisión, sigue en la bolsa).
      *
-     * @param nextEpisodeTimestamp timestamp del próximo episodio (ya con buffer de 3h) o null si no hay fecha
+     * NUEVO v15: setea epEsperado = episodeNumber + 1 para que el AiringController
+     * sepa qué episodio específico está esperando el usuario.
      */
     suspend fun markAsWaiting(
         history: WatchHistoryEntity,
@@ -369,17 +547,19 @@ class AiringController private constructor(
     ) {
         val effectiveTs = nextEpisodeTimestamp?.takeIf { it > 0L }
         val now = System.currentTimeMillis()
+        val expectedEp = history.episodeNumber + 1  // el episodio que el usuario espera ver
         dao.insertWatchHistory(history.copy(
             progressMs = 0L,
             durationMs = 0L,
-            isAiring = true,
+            isAiring = true,  // sigue en la bolsa
             nextEpisodeTimestamp = effectiveTs,
-            waitingSinceTimestamp = now / 1000,  // en segundos
-            hasNewEpisode = false,  // recién entró en espera, no sabemos si hay nuevos
-            nextAvailableEpisode = history.episodeNumber,  // por ahora, lo último que sabemos
+            waitingSinceTimestamp = now / 1000,
+            hasNewEpisode = false,
+            nextAvailableEpisode = history.episodeNumber,
+            epEsperado = expectedEp,  // NUEVO: trackear el ep que estamos esperando
             timestamp = now
         ))
-        Log.i(TAG, "✅ ${history.title} marcado en espera (ep=${history.episodeNumber}, nextTs=$effectiveTs, waitingSince=${now/1000})")
+        Log.i(TAG, "✅ ${history.title} marcado en espera (ep=${history.episodeNumber}, epEsperado=$expectedEp, nextTs=$effectiveTs, waitingSince=${now/1000})")
 
         // Asegurar que esté en lista "Viendo" (lista 3)
         if (history.anilistId > 0) {

@@ -17,7 +17,7 @@ import com.mew.animemew.data.season.SeasonChainEntity
         WatchHistoryEntity::class,
         SeasonChainEntity::class
     ],
-    version = 13,
+    version = 15,
     exportSchema = false
 )
 abstract class AnimeDatabase : RoomDatabase() {
@@ -42,6 +42,35 @@ abstract class AnimeDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE watch_history ADD COLUMN nextAvailableEpisode INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE watch_history ADD COLUMN hasNewEpisode INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        // MIGRACIÓN 13 → 14: La "Bolsa" de emisión.
+        // Añade 2 columnas para trackear el próximo episodio desde AniList:
+        //  - anilistNextEpNum: número del próximo ep según AniList (0 = sin info)
+        //  - anilistNextEpAirAt: cuándo se emite (Unix seg UTC, 0 = sin info)
+        //
+        // Esto permite que el AiringController sepa CUÁNDO verificar jk sin
+        // tener que hacer scraping constante. Solo verifica cuando
+        // anilistNextEpAirAt + 1.5h <= now.
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE watch_history ADD COLUMN anilistNextEpNum INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE watch_history ADD COLUMN anilistNextEpAirAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        // MIGRACIÓN 14 → 15: Campo epEsperado.
+        // Añade una columna para trackear qué episodio está esperando el usuario
+        // cuando entra en "En espera". Esto permite que el AiringController
+        // verifique ESE episodio específicamente en jk, sin importar si
+        // salieron más eps después.
+        //
+        // - 0 = no está esperando un ep específico (o no está en espera)
+        // - N > 0 = está esperando el episodio N (verificar disponibilidad de N)
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE watch_history ADD COLUMN epEsperado INTEGER NOT NULL DEFAULT 0")
             }
         }
 
@@ -178,7 +207,8 @@ abstract class AnimeDatabase : RoomDatabase() {
                 .addMigrations(
                     MIGRATION_4_11, MIGRATION_5_11, MIGRATION_6_11,
                     MIGRATION_7_11, MIGRATION_8_11, MIGRATION_9_10,
-                    MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13
+                    MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
+                    MIGRATION_13_14, MIGRATION_14_15
                 )
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {

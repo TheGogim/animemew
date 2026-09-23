@@ -717,15 +717,21 @@ class PlayerViewModel(application: android.app.Application) : androidx.lifecycle
         val nextAvail = existing?.nextAvailableEpisode ?: 0
         val hasNew = if (nextAvail > 0) nextAvail > episode else false
 
-        // FIX Fase 5: cuando el usuario está viendo un episodio (progressMs > 0),
-        // NO debe estar marcado como isAiring=true (porque no está esperando,
-        // está viendo). Solo isAiring=true si está en el último episodio
-        // disponible Y con progressMs=0 (es decir, realmente en espera).
-        val actualIsAiring = if (progressMs > 0) {
-            false  // está viendo, no esperando
-        } else {
-            isAiring  // mantener el estado de espera original
-        }
+        // NUEVO Fase 3 (v14): isAiring ahora significa "este anime está en
+        // emisión y lo seguimos". Siempre true para animes en emisión,
+        // sin importar si el usuario está viendo (progressMs > 0) o esperando.
+        // Esto hace que el anime aparezca SIEMPRE en Horarios y en la bolsa.
+        //
+        // ANTES (v13): if (progressMs > 0) false else isAiring  ← MAL, desaparecía de Horarios
+        // AHORA (v14): isAiring (mantener el estado de emisión)
+        val actualIsAiring = isAiring
+
+        // NUEVO Fase 4 (v15): preservar epEsperado y otros campos de la bolsa
+        // si ya existían. Esto es CRÍTICO: si el usuario está viendo un episodio
+        // y el AiringController ya había seteado epEsperado, NO debemos perderlo.
+        val epEsperado = existing?.epEsperado ?: 0
+        val anilistNextEpNum = existing?.anilistNextEpNum ?: 0
+        val anilistNextEpAirAt = existing?.anilistNextEpAirAt ?: 0L
 
         val tsToSave = if (actualIsAiring && nextEpisodeTimestamp > 0) nextEpisodeTimestamp else null
 
@@ -739,7 +745,10 @@ class PlayerViewModel(application: android.app.Application) : androidx.lifecycle
                 isAiring = actualIsAiring,
                 nextEpisodeTimestamp = tsToSave,
                 nextAvailableEpisode = nextAvail,
-                hasNewEpisode = hasNew
+                hasNewEpisode = hasNew,
+                anilistNextEpNum = anilistNextEpNum,
+                anilistNextEpAirAt = anilistNextEpAirAt,
+                epEsperado = epEsperado
             )
         )
     }
